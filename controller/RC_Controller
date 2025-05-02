@@ -1,1 +1,162 @@
+////
+// Class: EE324 Microprocessors
+// Names: Joshua Pizana, Josiah Kumley, Jack Gardner
+// Date: 5/1/2025
+// Description: This .cpp file implements functionality with input devices, such as the 4x4 matrix keypad and 
+// anolog joystick using an Arduino. The keypad scanning uses row and column matrix scanning () to detect button 
+// presses from the keypad and translate them into logic key values (). While taking account of iffy hardware wiring 
+// with remapped key array. The debounced input provides 'wait' for key and non-blocking keypad reads with debouncing. 
+// The joystick control uses SPI configuration () to read analog X & Y positions and digital button states, combining 
+// values into a 10-bit range (0-1023).
+////
 
+// include files
+#include "pmods.h"
+#include <SPI.h>
+#include <Arduino.h>
+
+// Joystick Configuration ──────────────────────────────────────────────────────────────────────────
+/*
+Initializes SPI communication for the joystick
+  - SPI mode 0i
+  - 1MHz clock (on a 16MHz Arduino)
+  - CS pin (10) as output
+*/
+void setupJoystick() {
+  SPI.begin(); // initialization SPI BUS
+  SPI.setDataMode(SPI_MODE0); // CPOL = 0, CPHA = 0
+  SPI.setClockDivider(SPI_CLOCK_DIV16); // 1MHz clock
+  pinMode(10,OUTPUT); // onboard selected pin for joycon
+  return;
+}
+
+// Read Joycon Positions
+/*
+X - axis position (x) (0-1023)
+Y - axis position (y) (0-1023)
+Note: Button on joy stick was attempted to be implemented as a hot key to switch to rc mode last minute 
+*/
+void getJoystick(float& x, float& y, int& button) {
+  byte data[5]; // Buffer for SPI data
+  byte c; // iterator
+  digitalWrite(10, LOW); // Activate the joystick through the CS (pin10)
+  delayMicroseconds(15);  // hold time
+
+  // Read 5 bytes via SPI
+  for (int c = 0; c < 5; c++) {
+    data[c] = SPI.transfer(0);  // Dummy write to read data
+    delayMicroseconds(10);  // Inter-byte delay
+  }
+  
+  digitalWrite(10, HIGH); // Release joystick (as HIGH)
+  delay(10);  // Post-read delay
+
+  // Combines bytes into 10-bit axis values
+  x = (data[1] << 8) | data[0];   
+  y = (data[3] << 8) | data[2]; 
+
+  // To decode button states from last bytes (from previous joystick bytes)
+  button = (data[4] & 1) | (data[4] & 2); 
+  if (button == 3) {                      
+    button++;
+  }
+  return;
+}
+
+// keypad Configuration ──────────────────────────────────────────────────────────────────────────
+
+// Matrix for easier identifying
+// Initializes pins for the keypad
+/*
+  Pins 2-5: Outputs (columns)
+  Pins 6-9: Inputs (rows)
+*/
+void setupKeypad() {
+  // sets column pins as outputs
+  pinMode(2,OUTPUT);  // column 1
+  pinMode(3,OUTPUT);  // column 2
+  pinMode(4,OUTPUT);  // column 3
+  pinMode(5,OUTPUT);  // column 4
+  // sets row pins as inputs
+  pinMode(6,INPUT); // row 1
+  pinMode(7,INPUT); // row 2
+  pinMode(8,INPUT); // row 3
+  pinMode(9,INPUT); // row 4
+  return;
+}
+
+// searches for keypad input, and returns 16-bit pressed state
+// @return bitmasks where each bit represents a key such as 1=pressed
+unsigned int getKeypadRaw() {
+    unsigned int data = 0; // 16-bit result (one bit per key)
+    byte c; // iterator
+    byte k; // iterator
+    // scans each column
+    for(c = 0; c < 4; c++) { 
+      // drives one column low and other columns high
+      for(k = 0; k < 4; k++) {
+        if(k == c) {
+          digitalWrite(k + 2, LOW);
+        } else {
+          digitalWrite(k + 2, HIGH);
+        }
+      }
+      // read rows and build results
+      for(k = 0; k < 4; k++) { //
+        data = data << 1;
+        data |= ~(digitalRead(k + 6)) & 1;  // shift and add bit
+      }
+      delay(1); // debounce delay
+    }
+    return data;
+}
+
+// gets single pressed key value and returns key value (0-15) or -1 if none pressed
+int getKeypad() {
+    unsigned int pressed = getKeypadRaw();
+    byte place = 0; // bit position counter
+    // key mapping as an array 
+    /* The key mapping is mirrored and rotated in the code to compensate how the physical keypad matrix is
+       wired to the physical micrcontroller. Since the scanning order (such as the columns activated by pins 2-5 
+       and rows through pins 6-9) do not match the keypads visual layout, the keys[] array will rearrange the values
+       to maintain the logical button numbering. Such as, when a press 1 physically, the scanning process can detect 
+       the code as the fourth column's first row. So the array maps that position back to value 1. This will allow
+       the code to remap rather than to physically rewire the microcontroller setup, this ensures the expected values
+       to return correctly. 
+    */
+    int keys[17] = {        1, 4, 7, 0,     
+                            2, 5, 8, 0xF,       
+                            3, 6, 9, 0xE,
+                            0xA, 0xB, 0xC, 0xD,
+                        
+                            -1 };   
+    // finsd the first set bit (pressed key value)
+    while(bitIndex(pressed, place) == 0 && place < 16) { // scan by bitIndex which buttons are pressed, incrementing until pressed button is found
+        place += 1;
+    }
+    return keys[place]; // returns the corresponding key value
+}
+
+// blocks until a key is pressed and released, returns valid key value (0-15)
+int waitForKey() {
+  int key;
+  // simply waits for any key presses
+  while(getKeypad() == -1);
+  key = getKeypad();
+  Serial.println(getKeypad(),HEX); // prints the key into debug
+  while(getKeypad() != -1); // waits for a key release
+  delay(20); // debounce delay
+
+  return key;
+}
+
+// extracts specific bit from integer
+/*
+param num input number
+param index bit position (0=LSB)
+return But value (0 or 1)
+*/
+bool bitIndex(int num, unsigned int index) {
+  num = num >> (index) & 1;
+	return num;
+}
